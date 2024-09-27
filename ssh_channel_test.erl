@@ -38,6 +38,8 @@ create_and_use_channels(Connection) ->
         io:format("Closing Channel(~p)~n", [Channel1]),
         ok = ssh_connection:close(Connection, Channel1),
 
+        timer:sleep(2000),
+
         ok = send_hello_msg(Connection, Channel2),
         receive_data(Channel2),
         io:format("Closing Channel(~p)~n", [Channel2]),
@@ -68,7 +70,7 @@ create_netconf_channel(Connection) ->
     end.
 
 send_hello_msg(Connection, Channel) ->
-    HelloMessage = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><hello xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\"></hello>",
+    HelloMessage = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><hello xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\"><capabilities><capability>urn:ietf:params:netconf:base:1.1</capability></capabilities></hello>",
     io:format("Sending Hello message on Channel(~p)~n", [Channel]),
     ok = ssh_connection:send(Connection, Channel, HelloMessage, infinity).
 
