@@ -7,14 +7,42 @@ The `ssh_tunnel` module provides functionality to create SSH tunnels using syste
 
 ### Usage
 
+Start by creating a password less SSH key pair and copy the public key
+to the authorized keys of the user@host where we want to connect to:
+
+```shell
+cd ~/.ssh
+
+# Create the keys: hedlund_pwless
+ssh-keygen -t rsa -b 4096
+
+# Copy the public key to the authorized keys of our target host
+ssh-copy-id hedlund_pwless tobbe@hedlund
+```
+
 ```erlang
-% Start local port forwarding (e.g. local:8080 -> remote:80)
-{ok, Tunnel} = ssh_tunnel:local(8080, "remote-host", 80, "ssh-host", [{user, "username"}]).
+% Start local port forwarding: local:9191 -> remote:8008) , 
+% tunnel is setup to host: "hedlund" as user: "tobbe" using
+% the identity (i.e private SSH key): "/home/tobbe/.ssh/hedlund_pwless"
+{ok, Tunnel} = ssh_tunnel:local("127.0.0.1",9191,"127.0.0.1",8008,"hedlund",[{user,"tobbe"},{identity,"/home/tobbe/.ssh/hedlund_pwless"}]).
+```
 
-% Start remote port forwarding (e.g. remote:8080 -> local:80)
-{ok, Tunnel} = ssh_tunnel:remote(8080, 80, "ssh-host", [{user, "username"}]).
+Try to access the remote end point via the tunnel (make sure you have something running on the remote host...):
 
-% Stop a tunnel
+```shell
+curl -is -u admin:admin http://127.0.0.1:9191/restconf/data
+```
+
+You can setup a reverse SSH tunnel similarly:
+
+```erlang
+% Start remote port forwarding (e.g. remote:9191 -> local:8008)
+{ok, Tunnel} = ssh_tunnel:remote("127.0.0.1",8008,"127.0.0.1",9191,"hedlund",[{user,"tobbe"},{identity,"/home/tobbe/.ssh/hedlund_pwless"}]).
+```
+
+Stop the tunnel:
+
+```
 ok = ssh_tunnel:stop(Tunnel).
 ```
 
