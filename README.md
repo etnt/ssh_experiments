@@ -16,6 +16,9 @@ cd ~/.ssh
 # Create the keys: hedlund_pwless
 ssh-keygen -t rsa -b 4096
 
+# Set proper permission on the public key
+chmod 600 hedlund_pwless.pub
+
 # Copy the public key to the authorized keys of our target host
 ssh-copy-id hedlund_pwless tobbe@hedlund
 ```
