@@ -30,6 +30,12 @@ ssh-copy-id hedlund_pwless tobbe@hedlund
 {ok, Tunnel} = ssh_tunnel:local("127.0.0.1",9191,"127.0.0.1",8008,"hedlund",[{user,"tobbe"},{identity,"/home/tobbe/.ssh/hedlund_pwless"}]).
 ```
 
+You can check that the tunnel is listening to the port you have specified:
+
+``` bash
+netstat -tlpn
+```
+
 Try to access the remote end point via the tunnel (make sure you have something running on the remote host...):
 
 ```shell
@@ -51,12 +57,15 @@ ok = ssh_tunnel:stop(Tunnel).
 
 Options:
 - `user` (required): SSH username
-- `identity`: Path to SSH identity file (optional)
+- `identity`: (required) Path to SSH identity file
 
 Requirements:
 - SSH server must be running on the target host
 - SSH client must be installed locally
 - Appropriate SSH keys/credentials must be configured
+
+**FIXME: The SSH tunnel is currently not taken down properly**
+
 
 ## SSH Command Execution
 

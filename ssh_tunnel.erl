@@ -26,7 +26,7 @@ local(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options)
     Cmd = lists:flatten(
               io_lib:format("ssh ~s -nNT -L ~s:~b:~s:~b ~s@~s",
                             [Identity, LocalIp, LocalPort, RemoteIp, RemotePort, User, SshHost])),
-    start_tunnel(Cmd, local).
+    {ok, spawn(fun() -> start_tunnel(Cmd, local) end)}.
 
 assert_ip_address(What, IpStr) when is_list(IpStr) ->
     case inet:parse_address(IpStr) of
@@ -57,23 +57,22 @@ remote(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options)
     Cmd = lists:flatten(
               io_lib:format("ssh ~s -nNT -R ~s:~b:~s:~b ~s@~s",
                             [Identity, RemoteIp, RemotePort, LocalIp, LocalPort, User, SshHost])),
-    start_tunnel(Cmd, remote).
+    {ok, spawn(fun() -> start_tunnel(Cmd, remote) end)}.
 
 %% Stop a running tunnel
-stop(#tunnel{port = Port} = _Tunnel) ->
-    Port ! {self(), close},
+stop(Tunnel) when is_pid(Tunnel) ->
+    Tunnel ! {self(), stop},
     receive
-        {Port, closed} ->
-            ok
+        Msg ->
+            Msg
     after 5000 ->
-        catch port_close(Port),
-        {error, timeout}
+            error
     end.
 
 %% Internal functions
 
 start_tunnel(Cmd, Type) ->
-    io:format(">>> Cmd: ~p~n",[Cmd]),
+    %%io:format(">>> Cmd: ~p~n",[Cmd]),
     Port = open_port({spawn, Cmd}, [exit_status, {line, 16384}]),
     monitor_tunnel(Port, Type, []).
 
@@ -86,5 +85,17 @@ monitor_tunnel(Port, Type, Log) ->
         {Port, {exit_status, Status}} ->
             {error, {exit_status, Status, lists:reverse(Log)}};
         {'EXIT', Port, Reason} ->
-            {error, {tunnel_crashed, Reason, lists:reverse(Log)}}
+            {error, {tunnel_crashed, Reason, lists:reverse(Log)}};
+        {From, stop} ->
+            From ! close_port(Port)
     end.
+
+close_port(Port) ->
+    Port ! {self(), close},
+     receive
+         {Port, closed} ->
+             ok
+     after 5000 ->
+         catch port_close(Port),
+         {error, timeout}
+     end.
