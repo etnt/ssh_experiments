@@ -1,8 +1,12 @@
-# Netconf SSH channel handling
+# SSH Experiments
+> Just some experiments with the Erlang SSH library
+
+
+## Netconf SSH channel handling
 
 Verify that we can close one Netconf (SSH) channel and still use the other open channel.
 
-## Usage
+### Usage
 
 ```bash
 erlc ssh_channel_test.erl
