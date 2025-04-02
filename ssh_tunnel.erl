@@ -20,11 +20,11 @@ local(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options)
             undefined ->
                 "";
             Path ->
-                [" -i ", Path]
+                " -i " ++ Path
         end,
     % Build SSH command for local forwarding
     Cmd = lists:flatten(
-              io_lib:format("ssh ~s-nNT -L ~s:~b:~s:~b ~s@~s",
+              io_lib:format("ssh ~s -nNT -L ~s:~b:~s:~b ~s@~s",
                             [Identity, LocalIp, LocalPort, RemoteIp, RemotePort, User, SshHost])),
     start_tunnel(Cmd, local).
 
@@ -51,11 +51,11 @@ remote(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options)
             undefined ->
                 "";
             Path ->
-                [" -i ", Path]
+                " -i " ++ Path
         end,
     % Build SSH command for remote forwarding
     Cmd = lists:flatten(
-              io_lib:format("ssh ~s-nNT -R ~s:~b:~s:~b ~s@~s",
+              io_lib:format("ssh ~s -nNT -R ~s:~b:~s:~b ~s@~s",
                             [Identity, RemoteIp, RemotePort, LocalIp, LocalPort, User, SshHost])),
     start_tunnel(Cmd, remote).
 
