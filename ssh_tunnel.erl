@@ -88,7 +88,7 @@ prepare_ssh_options(Options) ->
         {user, User}
     ],
 
-    case proplists:get_value(identity, Options) of
+    case proplists:get_value(user_dir, Options) of
         undefined ->
             BaseOptions;
         Path ->
