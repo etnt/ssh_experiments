@@ -64,7 +64,6 @@ Requirements:
 - SSH client must be installed locally
 - Appropriate SSH keys/credentials must be configured
 
-**FIXME: The SSH tunnel is currently not taken down properly**
 
 
 ## SSH Command Execution

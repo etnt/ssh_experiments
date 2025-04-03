@@ -71,15 +71,25 @@ stop(Tunnel) when is_pid(Tunnel) ->
 
 %% Internal functions
 
-start_tunnel(Cmd, Type) ->
+start_tunnel(Cmd0, Type) ->
     %%io:format(">>> Cmd: ~p~n",[Cmd]),
+    Cmd = "sh -c 'echo $$; exec " ++ Cmd0 ++ "'",
     Port = open_port({spawn, Cmd}, [exit_status, {line, 16384}]),
-    monitor_tunnel(Port, Type, []).
+    Line = receive_line(Port),
+    monitor_tunnel(Port, Type, Line, []).
 
-monitor_tunnel(Port, Type, Log) ->
+receive_line(Port) ->
+    receive
+        {Port, {data, {eol, Data}}} ->
+            Data
+    end.
+
+
+
+monitor_tunnel(Port, Type, PidLine, Log) ->
     receive
         {Port, {data, {eol, Line}}} ->
-            monitor_tunnel(Port, Type, [Line | Log]);
+            monitor_tunnel(Port, Type, PidLine, [Line | Log]);
         {Port, {exit_status, 0}} ->
             {ok, #tunnel{port = Port, type = Type}};
         {Port, {exit_status, Status}} ->
@@ -87,6 +97,7 @@ monitor_tunnel(Port, Type, Log) ->
         {'EXIT', Port, Reason} ->
             {error, {tunnel_crashed, Reason, lists:reverse(Log)}};
         {From, stop} ->
+            force_kill(PidLine),
             From ! close_port(Port)
     end.
 
@@ -99,3 +110,8 @@ close_port(Port) ->
          catch port_close(Port),
          {error, timeout}
      end.
+
+force_kill(PidLine) ->
+    io:format("Killing OS pid: ~p~n", [PidLine]),
+    os:cmd(["kill -9 ", PidLine]),
+    killed.
