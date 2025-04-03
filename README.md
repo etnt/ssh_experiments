@@ -64,7 +64,19 @@ Requirements:
 - SSH client must be installed locally
 - Appropriate SSH keys/credentials must be configured
 
+### Alternative: setup SSH as a SOCKS server
 
+Setup the SSH/SOCKS server to listen on port: 1080
+
+``` bash
+ ssh -nNT -D 1080 -i ~/.ssh/hedlund_pwless tobbe@hedlund
+```
+
+Now we can access _anything_ on the inside, e.g:
+
+``` bash
+curl -u admin:admin --proxy socks5://127.0.0.1:1080 http://127.0.0.1:8008/restconf/data
+```
 
 ## SSH Command Execution
 
