@@ -16,6 +16,8 @@ local(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options) when
     assert_ip_address(local_ip, LocalIp),
     assert_ip_address(remote_ip, RemoteIp),
 
+    ssh_exec:start_deps(),
+
     SshOptions = prepare_ssh_options(Options),
 
     % Start tunnel in a separate process
@@ -83,10 +85,14 @@ stop(Tunnel) when is_pid(Tunnel) ->
 prepare_ssh_options(Options) ->
     User = proplists:get_value(user, Options),
 
-    BaseOptions = [
-        {silently_accept_hosts, true},
-        {user, User}
-    ],
+    BaseOptions =
+        [
+         {silently_accept_hosts, true},
+         {user, User},
+         %%{connectfun, fun on_connect/3},
+         {ssh_msg_debug_fun, fun debug_fun/4},
+         {disconnectfun, fun on_disconnect/1}
+        ],
 
     case proplists:get_value(user_dir, Options) of
         undefined ->
@@ -95,13 +101,29 @@ prepare_ssh_options(Options) ->
             [{user_dir, filename:dirname(Path)} | BaseOptions]
     end.
 
-start_local_tunnel(
-    LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, SshOptions
-) ->
-    {Host, Port} = parse_ssh_host(SshHost),
 
-    case ssh:connect(Host, Port, SshOptions) of
+debug_fun(_ConnRef, _AlwaysDisplay, Msg, _LanguageTag) ->
+    io:format("INFO(~p): debug_fun Msg=~p~n",[?LINE,Msg]),
+    ok.
+
+
+%%on_connect(Username, B, C) ->
+%%  io:format("~p on_connect: ~p ~p ~p\n",[self(), Username,B,C]),
+%%  ok.
+
+on_disconnect(A) ->
+  io:format("~p on_disconnect: ~p\n",[self(), A]),
+  ok.
+
+start_local_tunnel(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, SshOptions) ->
+    io:format("INFO(~p): SshOptions = ~p~n",[?LINE,SshOptions]),
+
+    {Host, Port} = parse_ssh_host(SshHost),
+    io:format("INFO(~p): Host=~p , Port=~p~n",[?LINE,Host,Port]),
+
+    try ssh:connect(Host, Port, SshOptions) of
         {ok, Connection} ->
+            io:format("INFO(~p): Connection = ~p~n",[?LINE,Connection]),
             LocalAddress =
                 case inet:parse_address(LocalIp) of
                     {ok, Addr} -> Addr;
@@ -111,7 +133,7 @@ start_local_tunnel(
             {ok, Listener} = gen_tcp:listen(LocalPort, [
                 {ip, LocalAddress},
                 binary,
-                {active, false},
+                {active, true},
                 {reuseaddr, true}
             ]),
 
@@ -123,6 +145,11 @@ start_local_tunnel(
             },
             accept_loop(Tunnel, RemoteIp, RemotePort);
         Error ->
+            io:format("ERROR(~p): ~p~n",[?LINE,Error]),
+            {error, {ssh_connect_failed, Error}}
+    catch
+        _:Error ->
+            io:format("CRASH(~p): ~p~n",[?LINE,Error]),
             {error, {ssh_connect_failed, Error}}
     end.
 
@@ -181,29 +208,37 @@ accept_loop(
     RemoteIp,
     RemotePort
 ) ->
-    case gen_tcp:accept(Listener) of
-        {ok, Client} ->
-            ChannelPid = spawn(fun() ->
-                handle_client_connection(
-                    Connection,
-                    Client,
-                    RemoteIp,
-                    RemotePort,
-                    Tunnel#tunnel.parent
-                )
-            end),
-            NewTunnel = Tunnel#tunnel{
-                channels = [ChannelPid | Tunnel#tunnel.channels]
-            },
-            accept_loop(NewTunnel, RemoteIp, RemotePort);
-        Error ->
-            {error, {accept_failed, Error}}
+    AcceptLoop = self(),
+    AcceptPid =
+        spawn(fun() ->
+                      case gen_tcp:accept(Listener) of
+                          {ok, Client} ->
+                              AcceptLoop ! {self(), {accepted,Client}},
+                              io:format("INFO(~p): ~p Got Client~n",[?LINE, self()]),
+                              handle_client_connection(
+                                Connection,
+                                Client,
+                                RemoteIp,
+                                RemotePort,
+                                Tunnel#tunnel.parent);
+                          Error ->
+                              AcceptLoop ! {self(), {accept_failed, Error}}
+                      end
+              end),
+    receive
+        {AcceptPid, Msg} ->
+            io:format("INFO(~p): AcceptLoop got: ~p~n",[?LINE, Msg]),
+            accept_loop(Tunnel, RemoteIp, RemotePort)
     end.
+
+
+
 
 handle_client_connection(Connection, Client, RemoteIp, RemotePort, Parent) ->
     % Open a session channel to the SSH server
     case ssh_connection:session_channel(Connection, infinity) of
         {ok, ChannelId} ->
+            io:format("INFO(~p): New ChannelId = ~p~n",[?LINE, ChannelId]),
             % Execute a command to connect to the desired service
             % Using netcat (nc) to connect to the target host:port
             ConnectCmd = io_lib:format(
@@ -211,14 +246,18 @@ handle_client_connection(Connection, Client, RemoteIp, RemotePort, Parent) ->
                 [RemoteIp, RemotePort]
             ),
 
+            %%spawn(fun() -> do_forward_local_data(Connection, ChannelId, Client) end),
+
             case
                 ssh_connection:exec(Connection, ChannelId, ConnectCmd, infinity)
             of
-                ok ->
+                success ->
+                    io:format("INFO(~p): Executed Netcat~n",[?LINE]),
                     % Register this channel with parent for cleanup
                     Parent ! {register_channel, self(), ChannelId},
                     forward_local_data(Connection, ChannelId, Client);
                 Error ->
+                    io:format("INFO(~p): exec failed, Error=~p~n",[?LINE,Error]),
                     gen_tcp:close(Client),
                     {error, {exec_failed, Error}}
             end;
@@ -227,10 +266,16 @@ handle_client_connection(Connection, Client, RemoteIp, RemotePort, Parent) ->
             {error, {channel_open_failed, Error}}
     end.
 
+%do_forward_local_data(Connection, ChannelId, Socket) ->
+%    timer:sleep(2000),
+%    forward_local_data(Connection, ChannelId, Socket).
+
 forward_local_data(Connection, ChannelId, Socket) ->
-    inet:setopts(Socket, [{active, once}]),
+    %%XX = inet:setopts(Socket, [{active, once}]),
+    io:format("INFO(~p): FW LOOP~n",[?LINE]),
     receive
         {tcp, Socket, Data} ->
+            io:format("INFO(~p): Got TCP Data = ~p~n",[?LINE, Data]),
             ssh_connection:send(Connection, ChannelId, Data),
             forward_local_data(Connection, ChannelId, Socket);
         {tcp_closed, Socket} ->
@@ -255,7 +300,10 @@ forward_local_data(Connection, ChannelId, Socket) ->
         {From, stop} ->
             ssh_connection:close(Connection, ChannelId),
             gen_tcp:close(Socket),
-            From ! ok
+            From ! ok;
+        Msg ->
+            io:format("INFO(~p): Unexpected TCP msg = ~p~n",[?LINE, Msg]),
+            forward_local_data(Connection, ChannelId, Socket)
     end.
 
 forward_remote_data(Tunnel = #tunnel{connection = Connection}, Socket) ->
