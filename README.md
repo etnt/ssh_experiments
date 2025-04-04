@@ -69,6 +69,23 @@ start_local_tunnel(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, SshOptions
     end.
 ```
 
+Note that this also works for Netconf:
+
+``` erlang
+# We have a Netconf/SSH server running on port 2022 on the Target host.
+{ok,Tunnel} = ssh_tcpip_tunnel:local("127.0.0.1",9933,"127.0.0.1",2022,"hedlund",[{user,"tobbe"},{user_dir,"/home/tobbe/.ssh/pwless/"}]).
+```
+
+```bash
+# From the Local host we run:
+$ netconf-console --host 127.0.0.1 --port 9933 --hello
+<?xml version="1.0" encoding="UTF-8"?>
+<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+  <capabilities>
+    <capability>urn:ietf:params:netconf:base:1.0</capability>
+    <capability>urn:ietf:params:netconf:base:1.1</capa.....snip...
+```
+
 
 ## SSH Tunneling (native Erlang, using Netcat)
 
