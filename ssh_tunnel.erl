@@ -4,6 +4,9 @@
 
 -record(tunnel, {connection, ref, type, channels = [], parent}).
 
+-define(dbg(FmtStr,Args), ok).
+%%-define(dbg(FmtStr,Args), io:format("~p(~p): "++FmtStr,[?MODULE,?LINE|Args])).
+
 %% Start local port forwarding tunnel (e.g. local:8080 -> remote:80)
 local(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options) when
     is_list(LocalIp),
@@ -102,28 +105,28 @@ prepare_ssh_options(Options) ->
     end.
 
 
-debug_fun(_ConnRef, _AlwaysDisplay, Msg, _LanguageTag) ->
-    io:format("INFO(~p): debug_fun Msg=~p~n",[?LINE,Msg]),
+debug_fun(_ConnRef, _AlwaysDisplay, _Msg, _LanguageTag) ->
+    ?dbg("INFO debug_fun Msg=~p~n",[_Msg]),
     ok.
 
 
 %%on_connect(Username, B, C) ->
-%%  io:format("~p on_connect: ~p ~p ~p\n",[self(), Username,B,C]),
+%%  ?dbg("~p on_connect: ~p ~p ~p\n",[self(), Username,B,C]),
 %%  ok.
 
-on_disconnect(A) ->
-  io:format("~p on_disconnect: ~p\n",[self(), A]),
+on_disconnect(_A) ->
+  ?dbg("INFO ~p on_disconnect: ~p\n",[self(), _A]),
   ok.
 
 start_local_tunnel(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, SshOptions) ->
-    io:format("INFO(~p): SshOptions = ~p~n",[?LINE,SshOptions]),
+    ?dbg("INFO SshOptions = ~p~n",[SshOptions]),
 
     {Host, Port} = parse_ssh_host(SshHost),
-    io:format("INFO(~p): Host=~p , Port=~p~n",[?LINE,Host,Port]),
+    ?dbg("INFO Host=~p , Port=~p~n",[Host,Port]),
 
     try ssh:connect(Host, Port, SshOptions) of
         {ok, Connection} ->
-            io:format("INFO(~p): Connection = ~p~n",[?LINE,Connection]),
+            ?dbg("INFO Connection = ~p~n",[Connection]),
             LocalAddress =
                 case inet:parse_address(LocalIp) of
                     {ok, Addr} -> Addr;
@@ -133,7 +136,7 @@ start_local_tunnel(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, SshOptions
             {ok, Listener} = gen_tcp:listen(LocalPort, [
                 {ip, LocalAddress},
                 binary,
-                {active, true},
+                {active, false},
                 {reuseaddr, true}
             ]),
 
@@ -145,11 +148,11 @@ start_local_tunnel(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, SshOptions
             },
             accept_loop(Tunnel, RemoteIp, RemotePort);
         Error ->
-            io:format("ERROR(~p): ~p~n",[?LINE,Error]),
+            ?dbg("ERROR ~p~n",[Error]),
             {error, {ssh_connect_failed, Error}}
     catch
         _:Error ->
-            io:format("CRASH(~p): ~p~n",[?LINE,Error]),
+            ?dbg("CRASH ~p~n",[Error]),
             {error, {ssh_connect_failed, Error}}
     end.
 
@@ -214,7 +217,7 @@ accept_loop(
                       case gen_tcp:accept(Listener) of
                           {ok, Client} ->
                               AcceptLoop ! {self(), {accepted,Client}},
-                              io:format("INFO(~p): ~p Got Client~n",[?LINE, self()]),
+                              ?dbg("INFO ~p Got Client~n",[self()]),
                               handle_client_connection(
                                 Connection,
                                 Client,
@@ -226,8 +229,8 @@ accept_loop(
                       end
               end),
     receive
-        {AcceptPid, Msg} ->
-            io:format("INFO(~p): AcceptLoop got: ~p~n",[?LINE, Msg]),
+        {AcceptPid, _Msg} ->
+            ?dbg("INFO AcceptLoop got: ~p~n",[_Msg]),
             accept_loop(Tunnel, RemoteIp, RemotePort)
     end.
 
@@ -238,7 +241,7 @@ handle_client_connection(Connection, Client, RemoteIp, RemotePort, Parent) ->
     % Open a session channel to the SSH server
     case ssh_connection:session_channel(Connection, infinity) of
         {ok, ChannelId} ->
-            io:format("INFO(~p): New ChannelId = ~p~n",[?LINE, ChannelId]),
+            ?dbg("INFO New ChannelId = ~p~n",[ChannelId]),
             % Execute a command to connect to the desired service
             % Using netcat (nc) to connect to the target host:port
             ConnectCmd = io_lib:format(
@@ -252,12 +255,12 @@ handle_client_connection(Connection, Client, RemoteIp, RemotePort, Parent) ->
                 ssh_connection:exec(Connection, ChannelId, ConnectCmd, infinity)
             of
                 success ->
-                    io:format("INFO(~p): Executed Netcat~n",[?LINE]),
+                    ?dbg("INFO Executed Netcat~n",[]),
                     % Register this channel with parent for cleanup
                     Parent ! {register_channel, self(), ChannelId},
                     forward_local_data(Connection, ChannelId, Client);
                 Error ->
-                    io:format("INFO(~p): exec failed, Error=~p~n",[?LINE,Error]),
+                    ?dbg("INFO exec failed, Error=~p~n",[Error]),
                     gen_tcp:close(Client),
                     {error, {exec_failed, Error}}
             end;
@@ -271,11 +274,10 @@ handle_client_connection(Connection, Client, RemoteIp, RemotePort, Parent) ->
 %    forward_local_data(Connection, ChannelId, Socket).
 
 forward_local_data(Connection, ChannelId, Socket) ->
-    %%XX = inet:setopts(Socket, [{active, once}]),
-    io:format("INFO(~p): FW LOOP~n",[?LINE]),
+    inet:setopts(Socket, [{active, once}]),
     receive
         {tcp, Socket, Data} ->
-            io:format("INFO(~p): Got TCP Data = ~p~n",[?LINE, Data]),
+            ?dbg("INFO Got TCP Data = ~p~n",[Data]),
             ssh_connection:send(Connection, ChannelId, Data),
             forward_local_data(Connection, ChannelId, Socket);
         {tcp_closed, Socket} ->
@@ -301,8 +303,8 @@ forward_local_data(Connection, ChannelId, Socket) ->
             ssh_connection:close(Connection, ChannelId),
             gen_tcp:close(Socket),
             From ! ok;
-        Msg ->
-            io:format("INFO(~p): Unexpected TCP msg = ~p~n",[?LINE, Msg]),
+        _Msg ->
+            ?dbg("INFO Unexpected TCP msg = ~p~n",[_Msg]),
             forward_local_data(Connection, ChannelId, Socket)
     end.
 
