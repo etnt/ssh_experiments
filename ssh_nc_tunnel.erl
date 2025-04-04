@@ -4,8 +4,8 @@
 
 -record(tunnel, {connection, ref, type, channels = [], parent}).
 
--define(dbg(FmtStr,Args), ok).
-%%-define(dbg(FmtStr,Args), io:format("~p(~p): "++FmtStr,[?MODULE,?LINE|Args])).
+%%-define(dbg(FmtStr,Args), ok).
+-define(dbg(FmtStr,Args), io:format("~p(~p): "++FmtStr,[?MODULE,?LINE|Args])).
 
 %% Start local port forwarding tunnel (e.g. local:8080 -> remote:80)
 local(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options) when
@@ -202,7 +202,7 @@ forward_local_data(Connection, ChannelId, Socket) ->
     inet:setopts(Socket, [{active, once}]),
     receive
         {tcp, Socket, Data} ->
-            ?dbg("INFO Got TCP Data = ~p~n",[Data]),
+            %%?dbg("INFO Got TCP Data = ~p~n",[Data]),
             ssh_connection:send(Connection, ChannelId, Data),
             forward_local_data(Connection, ChannelId, Socket);
         {tcp_closed, Socket} ->
