@@ -20,6 +20,43 @@ chmod 600 id_rsa.pub
 ssh-copy-id id_rsa tobbe@hedlund
 ```
 
+## SSH tunnel (using direct-tcpip message)
+  
+Instead of having to setup a Listen TCP socket to first
+connect to before sending data to be forwarded at the remote end
+(as in the example below), this code directly setup a SSH connection
+and a 'direct-tcpip' channel to forward the request on the remote side.
+
+```erlang
+ssh_direct_tcpip_tunnel:restconf_test("127.0.0.1",9933,"127.0.0.1",8008,"hedlund",[{user,"tobbe"},{user_dir,"/home/tobbe/.ssh/pwless/"}]).
+HTTP/1.1 200 OK
+Date: Mon, 07 Apr 2025 11:23:12 GMT
+Cache-Control: private, no-cache, must-revalidate, proxy-revalidate
+Etag: W/"1743-611321-810071+xml"
+Content-Type: application/yang-data+xml
+Transfer-Encoding: chunked
+...
+
+100C
+<data xmlns="urn:ietf:params:xml:ns:yang:ietf-restconf">
+  <yang-library xmlns="urn:ietf:params:xml:ns:yang:ietf-yang-library">
+    <module-set>....snip...
+```
+
+Note that this code makes use of a, for internal use, exported function:
+`ssh_connection:open_channel/4`.
+
+Also note, as from the: https://datatracker.ietf.org/doc/html/rfc4254#page-18
+
+* The `forwarded-tcpip` global request message is used when a party
+    wishes that connections to a port on the other side be forwarded
+    to the local side.
+
+* The `direct-tcpip` channel open message may also be sent for ports
+    for which no forwarding has been explicitly requested. The receiving
+    side must decide whether to allow the forwarding.
+
+
 ## SSH tunnel (native Erlang, short and simple)
 
 Here we make use of the `ssh:tcpip_tunnel_to_server/6` function,
