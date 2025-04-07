@@ -1,6 +1,21 @@
 # SSH Experiments
 > Just some experiments with the Erlang SSH library
 
+## Jumphost
+
+The "jumphost" concept, also known as a "jump server" or "bastion host," 
+is a fundamental security practice in network administration.
+
+Jumphosts act as a bridge between different security zones,
+providing a single point of entry and control.
+
+SSH's tunneling capabilities makes it an ideal protocol for securely
+accessing remote devices through an intermediary server.
+
+The following Erlang code examples explores how to implement establishing a
+secure SSH connection to the jumphost, and then using that connection
+to forward traffic to the target device behind it.
+
 ## Prepare password less SSH keys
 
 Start by creating a password less SSH key pair and copy the public key
