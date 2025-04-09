@@ -1,15 +1,45 @@
 -module(ssh_agent_forward).
 
--export([netconf_ssh_test/5, netconf_ssh_test/6]).
+-export([netconf_test/7
+        , netconf_ssh_test/5
+        , netconf_sshpass_test/6
+        , netconf_sshprompt_test/6
+        ]).
 
 %%-define(dbg(FmtStr,Args), ok).
 -define(dbg(FmtStr, Args),
     io:format("~p(~p): " ++ FmtStr, [?MODULE, ?LINE | Args])
 ).
 
+netconf_sshpass_test(RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password) ->
+    netconf_test(sshpass, RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password).
+
+netconf_sshprompt_test(RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password) ->
+    netconf_test(sshprompt, RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password).
+
+
+
+mk_ssh_cmd(sshpass, RemoteUser, RemoteIp, RemotePort, Password) ->
+    %% Build SSH command to connect to destination host with netconf subsystem
+    NoHostKeyVerification = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    %% NOTE: `sshpass` must be installed on Jumphost!
+    io_lib:format(
+      "sshpass -p '~s' ssh ~s -l ~s ~s -p ~w -s netconf",
+      [Password, NoHostKeyVerification, RemoteUser, RemoteIp, RemotePort]
+     );
+mk_ssh_cmd(sshprompt, RemoteUser, RemoteIp, RemotePort, _Password) ->
+    %% Build SSH command to connect to destination host with netconf subsystem
+    NoHostKeyVerification = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    %% NOTE: `sshpass` must be installed on Jumphost!
+    io_lib:format(
+      "ssh ~s -l ~s ~s -p ~w -s netconf",
+      [NoHostKeyVerification, RemoteUser, RemoteIp, RemotePort]
+     ).
+
+
 %% @doc Establish a full SSH connection to the destination host via a jump host
 %% and connect to the Netconf subsystem (with password authentication)
-netconf_ssh_test(RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password) ->
+netconf_test(PasswdMethod, RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password) ->
     assert_ip_address(remote_ip, RemoteIp),
 
     ssh_exec:start_deps(),
@@ -20,19 +50,26 @@ netconf_ssh_test(RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password) -
     %% Establish SSH connection to the jump host
     {ok, ConnRef} = ssh:connect(SshHost, 22, SshOptions),
 
-    %% Build SSH command to connect to destination host with netconf subsystem
-    NoHostKeyVerification = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-    %% NOTE: `sshpass` must be installed on Jumphost!
-    SSHCmd = io_lib:format(
-        "sshpass -p '~s' ssh ~s -l ~s ~s -p ~w -s netconf",
-        [Password, NoHostKeyVerification, RemoteUser, RemoteIp, RemotePort]
-    ),
+    SSHCmd = mk_ssh_cmd(PasswdMethod, RemoteUser, RemoteIp, RemotePort, Password),
 
     %% Execute the SSH command on the jump host
     {ok, ChannelId} = ssh_connection:session_channel(ConnRef, infinity),
 
-    ?dbg("Sending HELLO message!~n",[]),
     success = ssh_connection:exec(ConnRef, ChannelId, SSHCmd, infinity),
+
+
+    %% Send Netconf Hello message through the nested SSH connection
+    HelloMsg =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<hello xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+        "  <capabilities>\n"
+        "    <capability>urn:ietf:params:netconf:base:1.0</capability>\n"
+        "  </capabilities>\n"
+        "</hello>\n]]>]]>",
+
+    ?dbg("Sending HELLO message!~n",[]),
+    ok = ssh_connection:send(ConnRef, ChannelId, HelloMsg),
+
 
     %% Use the tloop_with_pw function to handle password prompts
     tloop_with_pw(ConnRef, ChannelId, Password),
@@ -53,9 +90,10 @@ netconf_ssh_test(RemoteIp, RemotePort, SshHost, Options, RemoteUser) ->
     {ok, ConnRef} = ssh:connect(SshHost, 22, SshOptions),
 
     %% Build SSH command to connect to destination host with netconf subsystem
+    NoHostKeyVerification = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     SSHCmd = io_lib:format(
-        "ssh -l ~s ~s -p ~w -s netconf -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -A",
-        [RemoteUser, RemoteIp, RemotePort]
+        "ssh ~s -A -l ~s ~s -p ~w -s netconf",
+        [NoHostKeyVerification, RemoteUser, RemoteIp, RemotePort]
     ),
 
     %% Execute the SSH command on the jump host

@@ -48,7 +48,7 @@ Top be able to provide a password to the remote device we also use the `sshpass`
 
 ```erlang
 %% Connect to a Netconf service with explicit password authentication
-ssh_agent_forward:netconf_ssh_test("127.0.0.1",2022,"hedlund",
+ssh_agent_forward:netconf_sshpass_test("127.0.0.1",2022,"hedlund",
     [{user,"tobbe"},{user_dir,"/home/tobbe/.ssh/pwless/"}], "admin", "admin").
 
 <?xml version="1.0" encoding="UTF-8"?>
