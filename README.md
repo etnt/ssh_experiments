@@ -35,6 +35,42 @@ chmod 600 id_rsa.pub
 ssh-copy-id id_rsa tobbe@hedlund
 ```
 
+## SSH Agent Forwarding
+
+The `ssh_agent_forward` module demonstrates how to establish SSH connections through
+a jump host to access Netconf services on remote devices.
+
+Since Netconf (per default) runs over SSH we need to do something similar to our other
+example below that uses Netcat; here however we are using the `ssh` command instead.
+Top be able to provide a password to the remote device we also use the `sshpass` command. 
+
+### Usage
+
+```erlang
+%% Connect to a Netconf service with explicit password authentication
+ssh_agent_forward:netconf_ssh_test("127.0.0.1",2022,"hedlund",
+    [{user,"tobbe"},{user_dir,"/home/tobbe/.ssh/pwless/"}], "admin", "admin").
+
+<?xml version="1.0" encoding="UTF-8"?>
+<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+<capabilities>
+<capability>urn:ietf:params:netconf:base:1.0</c....snip....
+```
+
+Another (untested) possibility is to use `-A` (Agent Forwarding) switch in the
+issued `ssh` command on the Jumphost. Thus, key-authentication (i.e no password)
+would be possible. Note that this hasn't been tested since it wasn't supported by
+the Netconf device used for testing.
+
+This approach differs from the previous tunneling methods by:
+1. Using nested SSH connections rather than port forwarding
+2. Automatically connecting to the Netconf SSH subsystem
+3. Supporting both agent forwarding (untested!) and password authentication (tested!)
+4. Sending Netconf protocol messages directly through the established connection
+
+Note that the password authentication method requires the `sshpass` utility to be installed on the jump host.
+
+
 ## SSH tunnel (using direct-tcpip message)
   
 Instead of having to setup a Listen TCP socket to first
@@ -256,4 +292,5 @@ ssh_exec:shell("hedlund", 22, [{user, "tobbe"}]).
 ```
 
 The module handles SSH connection setup automatically, including starting required applications and managing SSH keys from the user's .ssh directory.
+
 
