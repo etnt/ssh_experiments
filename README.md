@@ -39,6 +39,12 @@ ssh-copy-id id_rsa tobbe@hedlund
 
 As I understand it, the `-J` switch in the `ssh` command is not directly implemented at the base SSH protocol level described in RFC 4254. Instead, the -J switch is a feature implemented by the OpenSSH client (and potentially other SSH clients). It provides a convenient way to establish a connection to a destination host by first hopping through one or more intermediary SSH servers (the jumphosts).
 
+Example (you will be prompted twice for the password of: hedlund ,and: 127.0.0.1):
+
+``` bash
+ssh -J tobbe@hedlund admin@127.0.0.1 -p 2022 -s netconf 
+```
+
 The Erlang SSH library doesn't seem to have a direct -J function, it provides the underlying mechanisms (SSH connections and TCP forwarding) that would allow you to build this functionality yourself in Erlang, but it would probably require a substantial effort.
 
 So an alternative solution is to run the ssh command via an Erlang port. However, the ssh command expects a terminal when it prompts for passwords. Hence, we use a simple pty wrapper (ssh_pty_wrapper.c). Compile it as:
