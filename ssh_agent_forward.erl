@@ -21,13 +21,17 @@ netconf_ssh_test(RemoteIp, RemotePort, SshHost, Options, RemoteUser, Password) -
     {ok, ConnRef} = ssh:connect(SshHost, 22, SshOptions),
 
     %% Build SSH command to connect to destination host with netconf subsystem
+    NoHostKeyVerification = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    %% NOTE: `sshpass` must be installed on Jumphost!
     SSHCmd = io_lib:format(
-        "ssh -l ~s ~s -p ~w -s netconf -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no",
-        [RemoteUser, RemoteIp, RemotePort]
+        "sshpass -p '~s' ssh ~s -l ~s ~s -p ~w -s netconf",
+        [Password, NoHostKeyVerification, RemoteUser, RemoteIp, RemotePort]
     ),
 
     %% Execute the SSH command on the jump host
     {ok, ChannelId} = ssh_connection:session_channel(ConnRef, infinity),
+
+    ?dbg("Sending HELLO message!~n",[]),
     success = ssh_connection:exec(ConnRef, ChannelId, SSHCmd, infinity),
 
     %% Use the tloop_with_pw function to handle password prompts
@@ -95,11 +99,11 @@ tloop_with_pw(ConnRef, ChannelId, Password) ->
     receive
         %% DataTypeCode: 0 is normal output, 1 is stderr
         {ssh_cm, ConnRef, {data, ChannelId, 0 = _DataTypeCode, Data}} ->
-            io:format("RECEIVED:~n~s~n", [binary_to_list(Data)]),
+            ?dbg("RECEIVED:~n~s~n", [binary_to_list(Data)]),
             tloop_with_pw(ConnRef, ChannelId, Password);
         {ssh_cm, ConnRef, {data, ChannelId, 1 = _DataTypeCode, Data}} ->
             DataStr = binary_to_list(Data),
-            io:format("STDERR: ~s~n", [DataStr]),
+            ?dbg("STDERR: ~s~n", [DataStr]),
             %% Check if this is a password prompt
             case
                 lists:member($:, DataStr) andalso
