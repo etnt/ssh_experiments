@@ -30,9 +30,8 @@ mk_ssh_cmd(sshpass, RemoteUser, RemoteIp, RemotePort, Password) ->
 mk_ssh_cmd(sshprompt, RemoteUser, RemoteIp, RemotePort, _Password) ->
     %% Build SSH command to connect to destination host with netconf subsystem
     NoHostKeyVerification = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-    %% NOTE: `sshpass` must be installed on Jumphost!
     io_lib:format(
-      "ssh ~s -l ~s ~s -p ~w -s netconf",
+      "ssh -t ~s -l ~s ~s -p ~w -s netconf",
       [NoHostKeyVerification, RemoteUser, RemoteIp, RemotePort]
      ).
 

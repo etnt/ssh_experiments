@@ -1,8 +1,104 @@
 -module(ssh_tunnel).
 
 -export([local/6, remote/6, stop/1]).
+-export([netconf_jump_test/6, stop_jump_session/1]).
 
 -record(tunnel, {port, type}).
+
+
+
+%% @doc Connect to NETCONF using SSH ProxyJump (-J) feature for authentication prompt passthrough
+netconf_jump_test(RemoteIp, RemotePort, JumpHost, Options, RemoteUser, _Password) ->
+    assert_ip_address(remote_ip, RemoteIp),
+    
+    JumpUser = proplists:get_value(user, Options),
+    JumpUserHost = lists:flatten(io_lib:format("~s@~s", [JumpUser, JumpHost])),
+    
+    Identity =
+        case proplists:get_value(identity, Options) of
+            undefined ->
+                "";
+            Path ->
+                " -i " ++ Path
+        end,
+
+    %% Build SSH command with ProxyJump
+    NoHostKeyCheck = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    _Cmd = io_lib:format(
+        "ssh ~s ~s -J ~s ~s@~s -p ~w -s netconf",
+        [Identity, NoHostKeyCheck, JumpUserHost, RemoteUser, RemoteIp, RemotePort]
+    ),
+    
+    
+
+    %% Spawn interactive port to handle the SSH session
+    %%Port = open_port({spawn, Cmd}, [binary, exit_status, stderr_to_stdout]),
+    Port = open_port({spawn_executable, "./ssh_pty_wrapper"},
+                                    [{args,["-J", JumpUserHost,
+                                     RemoteUser,
+                                     "-p", integer_to_list(RemotePort), 
+                                     "-s", "netconf"]},
+                                 binary, use_stdio, stream]),
+                                 %%binary, stderr_to_stdout, use_stdio, stream, exit_status, {env,[{"TERM","vt100"},{"DISPLAY", ""}]} ]),                                 
+    
+    
+    interactive_session(Port, 3000).
+
+send_hello(Port) ->
+    %% Send Hello message over stdin to the SSH process
+    HelloMsg =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<hello xmlns=\"urn:ietf:params:xml:ns:netconf:base:1.0\">\n"
+        "  <capabilities>\n"
+        "    <capability>urn:ietf:params:netconf:base:1.0</capability>\n"
+        "  </capabilities>\n"
+        "</hello>\n]]>]]>",
+    
+    port_command(Port, list_to_binary(HelloMsg)),
+    
+    ok.
+
+%% Interactive port handler that relays I/O between Erlang and SSH process
+interactive_session(Port, Timeout) ->
+    io:format("Starting interactive session with SSH process...~n",[]),
+    receive
+        {Port, {data, Data}} ->
+            %% Data from SSH process - display it
+            io:format("GOT: ~s", [Data]),
+            
+            %% Check if it's asking for password
+            case binary:match(Data, <<"password:">>) of
+                nomatch -> ok;
+                _ -> 
+                    %% If password prompt detected, get password from user
+                    Password = io:get_line("Password: "),
+                    port_command(Port, list_to_binary(Password))
+            end,
+            
+            interactive_session(Port, Timeout);
+            
+        {Port, {exit_status, Status}} ->
+            io:format("SSH process exited with status ~p~n", [Status]);
+            
+        {'EXIT', Port, Reason} ->
+            io:format("SSH port closed with reason: ~p~n", [Reason]);
+            
+        {input, Data} ->
+            %% Forward input to SSH process
+            port_command(Port, list_to_binary(Data)),
+            interactive_session(Port, Timeout)
+
+    after Timeout ->
+        send_hello(Port),
+        interactive_session(Port, infinity)
+
+    end.
+
+%% To stop the session
+stop_jump_session(Port) ->
+    port_close(Port).
+
+
 
 %% Start local port forwarding tunnel (e.g. local:8080 -> remote:80)
 local(LocalIp, LocalPort, RemoteIp, RemotePort, SshHost, Options)
