@@ -8,41 +8,47 @@
 
 
 %% @doc Connect to NETCONF using SSH ProxyJump (-J) feature for authentication prompt passthrough
-netconf_jump_test(RemoteIp, RemotePort, JumpHost, Options, RemoteUser, _Password) ->
+netconf_jump_test(JumpHost, Options, RemoteIp, RemotePort, RemoteUser, RemotePassword) ->
     assert_ip_address(remote_ip, RemoteIp),
     
     JumpUser = proplists:get_value(user, Options),
+    JumpPassword = proplists:get_value(user_password, Options),
     JumpUserHost = lists:flatten(io_lib:format("~s@~s", [JumpUser, JumpHost])),
-    
-    Identity =
-        case proplists:get_value(identity, Options) of
-            undefined ->
-                "";
-            Path ->
-                " -i " ++ Path
-        end,
+
+    RemoteUserHost = lists:flatten(io_lib:format("~s@~s", [RemoteUser, RemoteIp])),
+
+    %%Identity =
+    %%    case proplists:get_value(identity, Options) of
+    %%        undefined ->
+    %%            throw({error,no_identity});
+    %%        Path ->
+    %%            Path
+    %%    end,
 
     %% Build SSH command with ProxyJump
-    NoHostKeyCheck = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-    _Cmd = io_lib:format(
-        "ssh ~s ~s -J ~s ~s@~s -p ~w -s netconf",
-        [Identity, NoHostKeyCheck, JumpUserHost, RemoteUser, RemoteIp, RemotePort]
-    ),
-    
-    
+    %%NoHostKeyCheck = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+    %%_Cmd = io_lib:format(
+    %%    "./ssh_pty_wrapper ~s ~s -J ~s ~s@~s -p ~w -s netconf",
+    %%    [Identity, NoHostKeyCheck, JumpUserHost, RemoteUser, RemoteIp, RemotePort]
+    %%),
+
+
 
     %% Spawn interactive port to handle the SSH session
-    %%Port = open_port({spawn, Cmd}, [binary, exit_status, stderr_to_stdout]),
+    %%Port = open_port({spawn, Cmd}, [binary, use_stdio, exit_status, stderr_to_stdout]),
     Port = open_port({spawn_executable, "./ssh_pty_wrapper"},
-                                    [{args,["-J", JumpUserHost,
-                                     RemoteUser,
-                                     "-p", integer_to_list(RemotePort), 
-                                     "-s", "netconf"]},
-                                 binary, use_stdio, stream]),
+                                    [{args,
+                                      [%"-i", Identity,
+                                       "-J", JumpUserHost,
+                                       RemoteUserHost,
+                                       "-p", integer_to_list(RemotePort),
+                                       "-s", "netconf"]},
+                                     binary, use_stdio, stream]),
                                  %%binary, stderr_to_stdout, use_stdio, stream, exit_status, {env,[{"TERM","vt100"},{"DISPLAY", ""}]} ]),                                 
     
     
-    interactive_session(Port, 3000).
+    jumphost_session(pw1, Port, 5000, JumpPassword, RemotePassword).
+
 
 send_hello(Port) ->
     %% Send Hello message over stdin to the SSH process
@@ -59,24 +65,29 @@ send_hello(Port) ->
     ok.
 
 %% Interactive port handler that relays I/O between Erlang and SSH process
-interactive_session(Port, Timeout) ->
-    io:format("Starting interactive session with SSH process...~n",[]),
+jumphost_session(State, Port, Timeout, JumpPassword, RemotePassword) ->
     receive
-        {Port, {data, Data}} ->
-            %% Data from SSH process - display it
-            io:format("GOT: ~s", [Data]),
-            
-            %% Check if it's asking for password
-            case binary:match(Data, <<"password:">>) of
-                nomatch -> ok;
-                _ -> 
-                    %% If password prompt detected, get password from user
-                    Password = io:get_line("Password: "),
-                    port_command(Port, list_to_binary(Password))
-            end,
-            
-            interactive_session(Port, Timeout);
-            
+        {Port, {data, Data}}  ->
+
+            if (State == pw1) orelse (State == pw2) ->
+                    case binary:match(Data, <<"password:">>) of
+                        nomatch ->
+                            io:format("<~p>: ~p~n",[State, Data]),
+                            jumphost_session(State, Port, Timeout, JumpPassword, RemotePassword);
+                        _ when State == pw1 ->
+                            io:format("<~p>: sending JumpPassword: ~s~n",[State,JumpPassword]),
+                            port_command(Port, list_to_binary(JumpPassword++"\n")),
+                            jumphost_session(pw2, Port, Timeout, JumpPassword, RemotePassword);
+                        _ when State == pw2 ->
+                            io:format("<~p>: sending RemotePassword: ~s~n",[State,RemotePassword]),
+                            port_command(Port, list_to_binary(RemotePassword++"\n")),
+                            jumphost_session(run, Port, Timeout, JumpPassword, RemotePassword)
+                    end;
+               true ->
+                    io:format("<~p>: ~p~n",[State, Data]),
+                    jumphost_session(State, Port, Timeout, JumpPassword, RemotePassword)
+            end;
+
         {Port, {exit_status, Status}} ->
             io:format("SSH process exited with status ~p~n", [Status]);
             
@@ -86,11 +97,17 @@ interactive_session(Port, Timeout) ->
         {input, Data} ->
             %% Forward input to SSH process
             port_command(Port, list_to_binary(Data)),
-            interactive_session(Port, Timeout)
+            jumphost_session(State, Port, Timeout, JumpPassword, RemotePassword)
 
     after Timeout ->
-        send_hello(Port),
-        interactive_session(Port, infinity)
+            if (State == pw1) orelse (State == pw2) ->
+                    jumphost_session(State, Port, Timeout, JumpPassword, RemotePassword);
+               true ->
+                    %% Send HELLO once!
+                    io:format("<~p>: sending Hello~n",[State]),
+                    send_hello(Port),
+                    jumphost_session(State, Port, infinity, JumpPassword, RemotePassword)
+            end
 
     end.
 
