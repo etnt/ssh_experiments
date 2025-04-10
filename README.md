@@ -99,6 +99,16 @@ This approach differs from the previous tunneling methods by:
 
 Note that the password authentication method requires the `sshpass` utility to be installed on the jump host.
 
+Also, I was worried that the password would be visible in the sshpass-command that we construct
+to be run on the Jumphost, but to my surprise, somehow (?), the password is not shown on the
+jumphost.
+
+``` bash
+# Running this on the Jumphost ("hedlund") , the password show up as: xxxxx
+❯ ps -ef | grep sshpass
+tobbe    3460700 3460699  0 10:27 ?        00:00:00 sshpass -p xxxxx ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -l admin 127.0.0.1 -p 2022 -s netconf
+```
+
 
 ## SSH tunnel (using direct-tcpip message)
   

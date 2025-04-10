@@ -50,12 +50,15 @@ netconf_test(PasswdMethod, RemoteIp, RemotePort, SshHost, Options, RemoteUser, P
     {ok, ConnRef} = ssh:connect(SshHost, 22, SshOptions),
 
     SSHCmd = mk_ssh_cmd(PasswdMethod, RemoteUser, RemoteIp, RemotePort, Password),
+    ?dbg("SSHCmd = ~p~n",[lists:flatten(SSHCmd)]),
 
     %% Execute the SSH command on the jump host
     {ok, ChannelId} = ssh_connection:session_channel(ConnRef, infinity),
 
     success = ssh_connection:exec(ConnRef, ChannelId, SSHCmd, infinity),
 
+    ?dbg("Sleeping 5 seconds before sending HELLO message~n",[]),
+    timer:sleep(5000),
 
     %% Send Netconf Hello message through the nested SSH connection
     HelloMsg =
