@@ -196,11 +196,11 @@ perform_key_exchange(Conn = #ssh_conn{socket = Socket}) ->
             DhInitPaddingLength =
                 MinPadding + (8 - (BaseLength + MinPadding) rem 8),
             DhInitPadding = crypto:strong_rand_bytes(DhInitPaddingLength),
-            DhInitPacketLen =
-                byte_size(DhInitPayload) + DhInitPaddingLength + 1,
-            DhInitPacket =
-                <<DhInitPacketLen:32/big, DhInitPaddingLength,
-                    DhInitPayload/binary, DhInitPadding/binary>>,
+    % packet_length is the length of padding_length + payload + padding
+    DhInitPacketLen = 1 + byte_size(DhInitPayload) + DhInitPaddingLength,
+    DhInitPacket =
+        <<DhInitPacketLen:32/big, DhInitPaddingLength:8,
+            DhInitPayload/binary, DhInitPadding/binary>>,
 
             ?dbg(
                 " Sending DH init packet:~n"
@@ -297,9 +297,10 @@ process_server_keys(
     NewkeysPaddingLength =
         (8 - ((byte_size(NewkeysPayload) + 5) rem 8)) rem 8 + 8,
     NewkeysPadding = crypto:strong_rand_bytes(NewkeysPaddingLength),
-    NewkeysPacketLen = byte_size(NewkeysPayload) + NewkeysPaddingLength + 1,
+    % packet_length is the length of padding_length + payload + padding
+    NewkeysPacketLen = 1 + byte_size(NewkeysPayload) + NewkeysPaddingLength,
     NewkeysPacket =
-        <<NewkeysPacketLen:32/big, NewkeysPaddingLength, NewkeysPayload/binary,
+        <<NewkeysPacketLen:32/big, NewkeysPaddingLength:8, NewkeysPayload/binary,
             NewkeysPadding/binary>>,
 
     case gen_tcp:send(Socket, NewkeysPacket) of
@@ -338,13 +339,17 @@ receive_newkeys_response(
                     case Payload of
                         <<?SSH_MSG_NEWKEYS>> ->
                             ?dbg(" Received NEWKEYS from server~n", []),
+                            % Reset sequence numbers when installing new keys
+                            % as per RFC 4253 Section 9
                             {ok, NegotiatedConn#ssh_conn{
                                 shared_secret = SharedSecret,
                                 session_id = SessionId,
                                 encrypt_key = EncKey,
                                 decrypt_key = DecKey,
                                 encrypt_mac_key = EncMacKey,
-                                decrypt_mac_key = DecMacKey
+                                decrypt_mac_key = DecMacKey,
+                                encrypt_seq = 0,
+                                decrypt_seq = 0
                             }};
                         Other ->
                             {error, {unexpected_newkeys_response, Other}}
@@ -433,11 +438,19 @@ create_kexinit(Cookie) ->
     BaseLength = byte_size(RawPayload) + 5,
     PaddingLength = MinPadding + (8 - (BaseLength + MinPadding) rem 8),
     Padding = crypto:strong_rand_bytes(PaddingLength),
-    PacketLen = byte_size(RawPayload) + PaddingLength + 1,
+    % packet_length is the length of padding_length + payload + padding
+    PacketLen = 1 + byte_size(RawPayload) + PaddingLength, % 1 for padding_length byte
 
-    % Create complete packet
+    % Create complete packet with explicit padding_length
     Packet =
-        <<PacketLen:32/big, PaddingLength, RawPayload/binary, Padding/binary>>,
+        <<PacketLen:32/big, PaddingLength:8, RawPayload/binary, Padding/binary>>,
+
+    ?dbg(" Created KEXINIT packet format:~n"
+         "  Packet length: ~p~n"
+         "  Padding length: ~p~n"
+         "  Raw payload size: ~p~n"
+         "  Total with length field: ~p~n",
+         [PacketLen, PaddingLength, byte_size(RawPayload), PacketLen + 4]),
 
     % Log packet details
     io:format(
@@ -494,8 +507,8 @@ receive_kex_dh_reply(Socket, Conn) ->
                     PayloadLen = PacketLen - PaddingLen - 1,
                     <<Payload:PayloadLen/binary, _Padding/binary>> =
                         PayloadAndPadding,
-                    ?dbg(" Got payload of length ~p: ~p~n", [
-                        PayloadLen, Payload
+                    ?dbg(" Got payload of length ~p~n", [
+                        PayloadLen
                     ]),
                     case Payload of
                         <<?SSH_MSG_KEXINIT, Cookie:16/bytes, Rest/binary>> ->
@@ -1195,16 +1208,49 @@ encrypt_packet(
         encrypt_key = Key, encrypt_mac_key = MacKey, encrypt_seq = Seq
     }
 ) ->
-    % Ensure packet length is multiple of block size (16 bytes for AES)
-    PaddingLength = 16 - (byte_size(Packet) rem 16),
+    % Calculate the minimum padding required according to RFC 4253 Section 6
+    % Total length must be a multiple of the cipher block size (16 for AES-CTR)
+    % and at least 4 bytes of padding
+    MinPaddingLength = 4,
+    BaseLength = byte_size(Packet) + 5, % 5 = 4 (length field) + 1 (padding length field)
+    ExtraLength = (16 - (BaseLength + MinPaddingLength) rem 16) rem 16,
+    PaddingLength = MinPaddingLength + ExtraLength,
+
+    % Generate random padding
     Padding = crypto:strong_rand_bytes(PaddingLength),
 
     % Create packet with length and padding
+    % packet_length is the length of padding_length + payload + padding
+    PacketLen = 1 + byte_size(Packet) + PaddingLength, % 1 for padding_length byte
+    ?dbg(" Encrypt packet details:~n"
+         "  Original payload size: ~p bytes~n"
+         "  Padding length: ~p bytes~n"
+         "  Total packet length: ~p bytes~n"
+         "  Total with length field: ~p bytes~n",
+         [byte_size(Packet), PaddingLength, PacketLen, PacketLen + 4]),
 
-    % +1 for padding_length field
-    PacketLen = byte_size(Packet) + PaddingLength + 1,
+    % packet_length(4) | padding_length(1) | payload | padding
     FullPacket =
-        <<PacketLen:32/big, PaddingLength, Packet/binary, Padding/binary>>,
+        <<PacketLen:32/big, PaddingLength:8, Packet/binary, Padding/binary>>,
+
+    % Verify packet format before encryption
+    case FullPacket of
+        <<Len:32/big, PadLen, Rest/binary>> ->
+            ?dbg(" Packet format check:~n"
+                 "  Length field: ~p~n"
+                 "  Padding length: ~p~n"
+                 "  Rest size: ~p bytes~n"
+                 "  Full hex:~n~s~n",
+                 [Len, PadLen, byte_size(Rest), 
+                  binary_to_list(binary:encode_hex(FullPacket))]);
+        _ ->
+            ?dbg(" ERROR: Malformed packet before encryption~n", [])
+    end,
+
+    % Calculate MAC over sequence number and unencrypted packet
+    Mac = crypto:mac(
+        hmac, sha256, MacKey, <<Seq:32/big, FullPacket/binary>>
+    ),
 
     % Generate CTR IV using sequence number
     IV = <<Seq:64/big, 0:64/big>>,
@@ -1212,11 +1258,6 @@ encrypt_packet(
     % Encrypt with AES-CTR
     EncryptedData = crypto:crypto_one_time(
         aes_128_ctr, Key, IV, FullPacket, true
-    ),
-
-    % Generate HMAC over sequence number and encrypted data
-    Mac = crypto:mac(
-        hmac, sha256, MacKey, <<Seq:32/big, EncryptedData/binary>>
     ),
 
     % Update sequence number for next packet
@@ -1233,41 +1274,50 @@ decrypt_packet(
 ) ->
     try
         % Split packet into encrypted data and MAC
-
         % SHA256 produces 32-byte MAC
         MacSize = 32,
         DataSize = byte_size(Packet) - MacSize,
         <<EncryptedData:DataSize/binary, ReceivedMac:MacSize/binary>> = Packet,
 
-        % Verify MAC
+        % Generate CTR IV using sequence number
+        IV = <<Seq:64/big, 0:64/big>>,
+
+        % Decrypt with AES-CTR
+        DecryptedData = crypto:crypto_one_time(
+            aes_128_ctr, Key, IV, EncryptedData, false
+        ),
+
+        ?dbg(" Decrypt packet details:~n"
+             "  Encrypted data size: ~p bytes~n"
+             "  MAC size: ~p bytes~n"
+             "  Decrypted data size: ~p bytes~n"
+             "  Decrypted hex:~n~s~n",
+             [byte_size(EncryptedData), 
+              MacSize,
+              byte_size(DecryptedData),
+              binary_to_list(binary:encode_hex(DecryptedData))]),
+
+        % Verify MAC over sequence number and decrypted packet
         ExpectedMac = crypto:mac(
-            hmac, sha256, MacKey, <<Seq:32/big, EncryptedData/binary>>
+            hmac, sha256, MacKey, <<Seq:32/big, DecryptedData/binary>>
         ),
         case crypto:secure_compare(ReceivedMac, ExpectedMac) of
             true ->
-                % Generate CTR IV using sequence number
-                IV = <<Seq:64/big, 0:64/big>>,
-
-                % Decrypt with AES-CTR
-                DecryptedData = crypto:crypto_one_time(
-                    aes_128_ctr, Key, IV, EncryptedData, false
-                ),
-
                 % Parse packet format
-                <<PacketLen:32/big, PaddingLength, Payload:PacketLen/binary,
-                    _Padding/binary>> = DecryptedData,
-
-                % Extract actual payload (without padding)
-                PayloadLen = PacketLen - PaddingLength - 1,
-                <<ActualPayload:PayloadLen/binary, _/binary>> = Payload,
-
-                % Update sequence number for next packet
-                NewConn = Conn#ssh_conn{
-                    decrypt_seq = (Seq + 1) band 16#ffffffff
-                },
-
-                % Return decrypted payload and updated connection state
-                {ok, ActualPayload, NewConn};
+                case DecryptedData of
+                    <<PacketLen:32/big, Rest/binary>> when byte_size(Rest) >= PacketLen + 1 ->
+                        <<PaddingLength, PacketData:PacketLen/binary, _/binary>> = Rest,
+                        % The actual payload length is packet length minus padding length minus 1
+                        % (minus 1 because padding length byte itself is included in packet length)
+                        PayloadLen = PacketLen - PaddingLength - 1,
+                        <<ActualPayload:PayloadLen/binary, _Padding:PaddingLength/binary>> = PacketData,
+                        % Update sequence number for next packet
+                        NewConn = Conn#ssh_conn{decrypt_seq = (Seq + 1) band 16#ffffffff},
+                        % Return decrypted payload and updated connection state
+                        {ok, ActualPayload, NewConn};
+                    _ ->
+                        {error, {decrypt_failed, bad_packet_format}}
+                end;
             false ->
                 {error, invalid_mac}
         end
