@@ -1150,28 +1150,47 @@ validate_version_string(VersionStr) ->
 
 %% Authentication
 authenticate(Conn = #ssh_conn{socket = Socket}, Username, Password) ->
-    ?dbg(
-        "authenticate/3:~n"
-        "  Username: ~s~n"
-        "  Password: ~s~n",
-        [Username, Password]
-    ),
+    ?dbg(" Starting password authentication for user ~s~n", [Username]),
+
+    % Create and encrypt auth request
+    ?dbg(" Creating authentication request~n", []),
     AuthRequest = create_auth_request(Username, Password),
     {AuthRequestEnc, NewConn} = encrypt_packet(AuthRequest, Conn),
 
+    % Log packet details before sending
+    ?dbg(" Authentication request packet:~n"
+         "  Service name: ssh-connection~n"
+         "  Method: password~n"
+         "  Username length: ~p bytes~n"
+         "  Password length: ~p bytes~n",
+         [byte_size(list_to_binary(Username)), 
+          byte_size(list_to_binary(Password))]),
+
     case gen_tcp:send(Socket, AuthRequestEnc) of
         ok ->
-            ?dbg("Sent authentication request: ~p~n", [AuthRequestEnc]),
+            ?dbg(" Authentication request sent successfully~n", []),
             case receive_auth_response(NewConn) of
-                {ok, success} ->
-                    {ok, NewConn#ssh_conn{authenticated = true}};
-                {ok, failure} ->
-                    {error, authentication_failed};
+                {ok, NewConn2} ->
+                    ?dbg(" Authentication completed successfully~n", []),
+                    {ok, NewConn2};
+                {error, {auth_response_failed, connection_closed}} ->
+                    ?dbg(" Connection closed by server - this may indicate:~n"
+                         "  1. Invalid credentials~n"
+                         "  2. Server requires a different auth method~n"
+                         "  3. Server security policy rejection~n", []),
+                    {error, {authentication_failed, connection_closed}};
+                {error, {authentication_failed, Methods}} ->
+                    ?dbg(" Server rejected authentication~n"
+                         "  Supported methods: ~s~n", [Methods]),
+                    {error, {authentication_failed, Methods}};
                 Error ->
                     Error
             end;
+        {error, closed} ->
+            ?dbg(" Connection closed while sending auth request~n", []),
+            {error, {auth_send_failed, connection_closed}};
         {error, Reason} ->
-            ?dbg("Failed to send authentication request: ~p~n", [Reason]),
+            ?dbg(" Failed to send auth request: ~p~n", [Reason]),
             {error, {auth_send_failed, Reason}}
     end.
 
@@ -1181,24 +1200,50 @@ create_auth_request(Username, Password) ->
         (encode_string(Username))/binary,
         (encode_string("ssh-connection"))/binary,
         (encode_string("password"))/binary,
-        % No old password
-        0,
+        0,  % No old password
         (encode_string(Password))/binary
     >>.
 
 receive_auth_response(Conn = #ssh_conn{socket = Socket}) ->
-    case gen_tcp:recv(Socket, 0, 5000) of
-        {ok, EncryptedPacket} ->
-            case decrypt_packet(EncryptedPacket, Conn) of
-                {ok, <<?SSH_MSG_USERAUTH_SUCCESS, _/binary>>} ->
-                    {ok, success};
-                {ok, <<?SSH_MSG_USERAUTH_FAILURE, _/binary>>} ->
-                    {ok, failure};
-                {error, Reason} ->
-                    {error, {auth_response_decrypt_failed, Reason}}
-            end;
-        {error, Reason} ->
-            {error, {auth_response_failed, Reason}}
+    ?dbg(" Waiting for authentication response...~n", []),
+    try
+        case gen_tcp:recv(Socket, 0, 5000) of
+            {ok, EncryptedPacket} ->
+                ?dbg(" Received encrypted response of ~p bytes~n", [byte_size(EncryptedPacket)]),
+                case decrypt_packet(EncryptedPacket, Conn) of
+                    {ok, <<?SSH_MSG_USERAUTH_SUCCESS, _/binary>>, NewConn} ->
+                        ?dbg(" Authentication successful~n", []),
+                        {ok, NewConn#ssh_conn{authenticated = true}};
+                    {ok, <<?SSH_MSG_USERAUTH_FAILURE, MethodsBin/binary>>, _} ->
+                        try
+                            {ok, [Methods, _Partial]} = decode_strings(MethodsBin),
+                            ?dbg(" Authentication failed. Server supports methods: ~s~n",
+                                 [Methods]),
+                            {error, {authentication_failed, Methods}}
+                        catch _:_ ->
+                            ?dbg(" Authentication failed with malformed failure message~n", []),
+                            {error, authentication_failed}
+                        end;
+                    {error, Reason} ->
+                        ?dbg(" Failed to decrypt response: ~p~n", [Reason]),
+                        {error, {auth_response_decrypt_failed, Reason}}
+                end;
+            {error, closed} ->
+                ?dbg(" Server closed connection during authentication~n", []),
+                {error, {auth_response_failed, connection_closed}};
+            {error, timeout} ->
+                ?dbg(" Authentication response timed out~n", []),
+                {error, {auth_response_failed, timeout}};
+            {error, Reason} ->
+                ?dbg(" Failed to receive response: ~p~n", [Reason]),
+                {error, {auth_response_failed, Reason}}
+        end
+    catch
+        error:Error:Stack ->
+            ?dbg(" Unexpected error during authentication:~n"
+                 "  Error: ~p~n"
+                 "  Stack: ~p~n", [Error, Stack]),
+            {error, {auth_response_failed, Error}}
     end.
 
 %% Encryption/Decryption
