@@ -63,9 +63,9 @@
     decrypt_key :: binary(),
     encrypt_mac_key :: binary(),
     decrypt_mac_key :: binary(),
-    % Added for CTR mode
+    % Added for CTR mode - using 64-bit integers for sequence numbers
     encrypt_seq = 0 :: non_neg_integer(),
-    % Added for CTR mode
+    % Added for CTR mode - using 64-bit integers for sequence numbers
     decrypt_seq = 0 :: non_neg_integer(),
     authenticated = false :: boolean()
 }).
@@ -779,7 +779,14 @@ decode_strings_impl(Data, Acc, Count) ->
                     Count > 0 -> Count - 1;
                     true -> Count
                 end,
-            decode_strings_impl(NewRest, [String | Acc], NewCount);
+            % If we've decoded the expected number of strings, return the result
+            % even if there's more data
+            if
+                NewCount =:= 0, Count > 0 ->
+                    {ok, lists:reverse([String | Acc]), NewRest};
+                true ->
+                    decode_strings_impl(NewRest, [String | Acc], NewCount)
+            end;
         <<Len:32/big, Rest/binary>> ->
             io:format(
                 "Debug: String length field (~p) larger than remaining data (~p bytes)~n"
@@ -790,12 +797,21 @@ decode_strings_impl(Data, Acc, Count) ->
                     binary_to_list(binary:encode_hex(Rest))
                 ]
             ),
-            {error, {insufficient_data, Len, byte_size(Rest)}};
-        Other when byte_size(Other) < 4 ->
-            case Count of
-                0 ->
-                    {ok, lists:reverse(Acc), Other};
+            % If we've decoded at least one string, return what we have so far
+            % instead of returning an error
+            case Acc of
+                [] ->
+                    {error, {insufficient_data, Len, byte_size(Rest)}};
                 _ ->
+                    {ok, lists:reverse(Acc)}
+            end;
+        Other when byte_size(Other) < 4 ->
+            % If we've decoded at least one string, return what we have so far
+            % instead of returning an error
+            case Acc of
+                [] when Count =:= 0 ->
+                    {ok, lists:reverse(Acc), Other};
+                [] ->
                     io:format(
                         "Debug: Incomplete string length field:~n"
                         "  Remaining size: ~p bytes~n"
@@ -805,7 +821,9 @@ decode_strings_impl(Data, Acc, Count) ->
                             binary_to_list(binary:encode_hex(Other))
                         ]
                     ),
-                    {error, {malformed_data, truncated}}
+                    {error, {malformed_data, truncated}};
+                _ ->
+                    {ok, lists:reverse(Acc)}
             end;
         Other ->
             io:format(
@@ -817,7 +835,14 @@ decode_strings_impl(Data, Acc, Count) ->
                     binary_to_list(binary:encode_hex(Other))
                 ]
             ),
-            {error, {malformed_data, truncated}}
+            % If we've decoded at least one string, return what we have so far
+            % instead of returning an error
+            case Acc of
+                [] ->
+                    {error, {malformed_data, truncated}};
+                _ ->
+                    {ok, lists:reverse(Acc)}
+            end
     end.
 
 compute_hash(Conn, _Cookie, HostKey, ClientPubKey, ServerPubKey, SharedSecret) ->
@@ -1155,7 +1180,31 @@ authenticate(Conn = #ssh_conn{socket = Socket}, Username, Password) ->
     % Create and encrypt auth request
     ?dbg(" Creating authentication request~n", []),
     AuthRequest = create_auth_request(Username, Password),
+    
+    % Log raw authentication request before encryption
+    ?dbg(" Raw authentication request:~n"
+         "  Size: ~p bytes~n"
+         "  Hex dump:~n~s~n",
+         [byte_size(AuthRequest), 
+          binary_to_list(binary:encode_hex(AuthRequest))]),
+    
+    % Log encryption details
+    ?dbg(" Encryption details:~n"
+         "  Encrypt key size: ~p bytes~n"
+         "  Encrypt MAC key size: ~p bytes~n"
+         "  Encrypt sequence number: ~p~n",
+         [byte_size(Conn#ssh_conn.encrypt_key),
+          byte_size(Conn#ssh_conn.encrypt_mac_key),
+          Conn#ssh_conn.encrypt_seq]),
+    
     {AuthRequestEnc, NewConn} = encrypt_packet(AuthRequest, Conn),
+
+    % Log encrypted packet details
+    ?dbg(" Encrypted authentication request:~n"
+         "  Size: ~p bytes~n"
+         "  Hex dump:~n~s~n",
+         [byte_size(AuthRequestEnc),
+          binary_to_list(binary:encode_hex(AuthRequestEnc))]),
 
     % Log packet details before sending
     ?dbg(" Authentication request packet:~n"
@@ -1257,59 +1306,59 @@ encrypt_packet(
     % Total length must be a multiple of the cipher block size (16 for AES-CTR)
     % and at least 4 bytes of padding
     MinPaddingLength = 4,
-    BaseLength = byte_size(Packet) + 5, % 5 = 4 (length field) + 1 (padding length field)
-    ExtraLength = (16 - (BaseLength + MinPaddingLength) rem 16) rem 16,
+    BaseLength = byte_size(Packet) + 1, % 1 for padding length field
+    % Calculate extra padding needed to make the total length a multiple of 16
+    % If BaseLength + MinPaddingLength is already a multiple of 16, ExtraLength will be 0
+    Remainder = (BaseLength + MinPaddingLength) rem 16,
+    ExtraLength = if
+                     Remainder =:= 0 -> 0;
+                     true -> 16 - Remainder
+                  end,
     PaddingLength = MinPaddingLength + ExtraLength,
 
     % Generate random padding
     Padding = crypto:strong_rand_bytes(PaddingLength),
 
-    % Create packet with length and padding
-    % packet_length is the length of padding_length + payload + padding
-    PacketLen = 1 + byte_size(Packet) + PaddingLength, % 1 for padding_length byte
+    % Create packet without length field
+    % padding_length(1) | payload | padding
+    PacketWithoutLength = <<PaddingLength:8, Packet/binary, Padding/binary>>,
+    
+    % Log packet details
     ?dbg(" Encrypt packet details:~n"
          "  Original payload size: ~p bytes~n"
          "  Padding length: ~p bytes~n"
-         "  Total packet length: ~p bytes~n"
-         "  Total with length field: ~p bytes~n",
-         [byte_size(Packet), PaddingLength, PacketLen, PacketLen + 4]),
-
-    % packet_length(4) | padding_length(1) | payload | padding
-    FullPacket =
-        <<PacketLen:32/big, PaddingLength:8, Packet/binary, Padding/binary>>,
-
-    % Verify packet format before encryption
-    case FullPacket of
-        <<Len:32/big, PadLen, Rest/binary>> ->
-            ?dbg(" Packet format check:~n"
-                 "  Length field: ~p~n"
-                 "  Padding length: ~p~n"
-                 "  Rest size: ~p bytes~n"
-                 "  Full hex:~n~s~n",
-                 [Len, PadLen, byte_size(Rest), 
-                  binary_to_list(binary:encode_hex(FullPacket))]);
-        _ ->
-            ?dbg(" ERROR: Malformed packet before encryption~n", [])
-    end,
-
-    % Calculate MAC over sequence number and unencrypted packet
-    Mac = crypto:mac(
-        hmac, sha256, MacKey, <<Seq:32/big, FullPacket/binary>>
-    ),
+         "  Packet size without length field: ~p bytes~n",
+         [byte_size(Packet), PaddingLength, byte_size(PacketWithoutLength)]),
 
     % Generate CTR IV using sequence number
     IV = <<Seq:64/big, 0:64/big>>,
 
     % Encrypt with AES-CTR
     EncryptedData = crypto:crypto_one_time(
-        aes_128_ctr, Key, IV, FullPacket, true
+        aes_128_ctr, Key, IV, PacketWithoutLength, true
     ),
 
-    % Update sequence number for next packet
-    NewConn = Conn#ssh_conn{encrypt_seq = (Seq + 1) band 16#ffffffff},
+    % Calculate packet length (the length of the encrypted data)
+    PacketLen = byte_size(EncryptedData),
+    
+    % Prepend packet length to encrypted data
+    FinalPacket = <<PacketLen:32/big, EncryptedData/binary>>,
+    
+    ?dbg(" Final packet details:~n"
+         "  Encrypted data size: ~p bytes~n"
+         "  Total with length field: ~p bytes~n",
+         [PacketLen, byte_size(FinalPacket)]),
+
+    % Calculate MAC over sequence number (using 64-bit) and final packet
+    Mac = crypto:mac(
+        hmac, sha256, MacKey, <<Seq:64/big, FinalPacket/binary>>
+    ),
+
+    % Update sequence number for next packet - using 64-bit integer
+    NewConn = Conn#ssh_conn{encrypt_seq = Seq + 1},
 
     % Return final packet and updated connection state
-    {<<EncryptedData/binary, Mac/binary>>, NewConn}.
+    {<<FinalPacket/binary, Mac/binary>>, NewConn}.
 
 decrypt_packet(
     Packet,
@@ -1342,9 +1391,9 @@ decrypt_packet(
               byte_size(DecryptedData),
               binary_to_list(binary:encode_hex(DecryptedData))]),
 
-        % Verify MAC over sequence number and decrypted packet
+        % Verify MAC over sequence number (using 64-bit) and encrypted packet
         ExpectedMac = crypto:mac(
-            hmac, sha256, MacKey, <<Seq:32/big, DecryptedData/binary>>
+            hmac, sha256, MacKey, <<Seq:64/big, EncryptedData/binary>>
         ),
         case crypto:secure_compare(ReceivedMac, ExpectedMac) of
             true ->
@@ -1356,8 +1405,8 @@ decrypt_packet(
                         % (minus 1 because padding length byte itself is included in packet length)
                         PayloadLen = PacketLen - PaddingLength - 1,
                         <<ActualPayload:PayloadLen/binary, _Padding:PaddingLength/binary>> = PacketData,
-                        % Update sequence number for next packet
-                        NewConn = Conn#ssh_conn{decrypt_seq = (Seq + 1) band 16#ffffffff},
+                        % Update sequence number for next packet - using 64-bit integer
+                        NewConn = Conn#ssh_conn{decrypt_seq = Seq + 1},
                         % Return decrypted payload and updated connection state
                         {ok, ActualPayload, NewConn};
                     _ ->
